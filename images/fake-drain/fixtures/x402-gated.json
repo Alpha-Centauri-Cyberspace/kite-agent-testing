@@ -1,0 +1,33 @@
+{
+  "ref": "refs/heads/main",
+  "before": "0000000000000000000000000000000000000000",
+  "after":  "3333333333333333333333333333333333333333",
+  "repository": {
+    "id": 4002,
+    "name": "gated-repo",
+    "full_name": "kite/gated-repo",
+    "private": true
+  },
+  "pusher": {
+    "name": "drain",
+    "email": "drain@kite-agent-testing.invalid"
+  },
+  "kite_test": {
+    "importance": "high",
+    "scenario_tag": "x402-sign-required"
+  },
+  "payment_required": {
+    "amount_atomic": 100,
+    "currency": "USDC",
+    "network": "eip155:84532",
+    "accept_url": "http://x402-facilitator:8080/accept",
+    "reason": "premium event stream access"
+  },
+  "commits": [
+    {
+      "id": "3333333333333333333333333333333333333333",
+      "message": "gated deploy requires payment",
+      "timestamp": "2026-01-01T00:00:00Z"
+    }
+  ]
+}

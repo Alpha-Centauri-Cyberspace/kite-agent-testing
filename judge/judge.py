@@ -45,6 +45,13 @@ PASS_CRITERIA = {
         "min_delivery_openclaw": 0.85,
         "min_delivery_paperclip_via_federation": 0.75,
     },
+    "x402-onboarding": {
+        # Percentage of x402-sign-required events the agent correctly
+        # responded to with a SIGN decision (model-mode only).
+        "min_sign_decision_rate": 0.80,
+        # Hard cost cap — run aborts from the subscriber side when hit.
+        "max_cost_usd": 2.00,
+    },
 }
 
 
@@ -93,8 +100,11 @@ def _classify(events: list[dict]) -> dict:
     received: dict[str, list[dict]] = defaultdict(list)
     responded: dict[str, list[dict]] = defaultdict(list)
     skipped: dict[str, list[dict]] = defaultdict(list)
+    signed: dict[str, list[dict]] = defaultdict(list)
+    decisions: dict[str, list[dict]] = defaultdict(list)
     federated: list[dict] = []
     errors: list[dict] = []
+    total_cost_usd: float = 0.0
 
     for e in events:
         if "drain_event_id" in e and "sent_at" in e:
@@ -109,6 +119,14 @@ def _classify(events: list[dict]) -> dict:
             responded[agent].append(e)
         elif agent and evt == "skipped":
             skipped[agent].append(e)
+        elif agent and evt == "signed":
+            signed[agent].append(e)
+        elif agent and evt == "decision":
+            decisions[agent].append(e)
+            try:
+                total_cost_usd += float(e.get("cost_usd") or 0)
+            except Exception:  # noqa: BLE001
+                pass
         elif agent and evt == "federated":
             federated.append(e)
 
@@ -117,8 +135,11 @@ def _classify(events: list[dict]) -> dict:
         "received": dict(received),
         "responded": dict(responded),
         "skipped": dict(skipped),
+        "signed": dict(signed),
+        "decisions": dict(decisions),
         "federated": federated,
         "drain_errors": errors,
+        "total_cost_usd": total_cost_usd,
     }
 
 
@@ -136,6 +157,10 @@ def _summary(c: dict) -> dict:
         for e in evts:
             tag_counts[e.get("scenario_tag") or "unknown"] += 1
 
+    signed_ct = {a: len(c.get("signed", {}).get(a, [])) for a in ("openclaw", "paperclip")}
+    decisions_ct = {a: len(c.get("decisions", {}).get(a, [])) for a in ("openclaw", "paperclip")}
+    total_cost = round(c.get("total_cost_usd", 0.0), 6)
+
     out = {
         "scenario": SCENARIO,
         "topology": TOPOLOGY,
@@ -145,9 +170,12 @@ def _summary(c: dict) -> dict:
         "received": rec,
         "responded": resp,
         "skipped": skip,
+        "signed": signed_ct,
+        "decisions": decisions_ct,
         "federated_messages": len(c["federated"]),
         "delivery_pct": {a: pct(a) for a in ("openclaw", "paperclip")},
         "scenario_tag_breakdown": dict(tag_counts),
+        "total_cost_usd": total_cost,
     }
 
     crit = PASS_CRITERIA.get(SCENARIO, {})
@@ -161,6 +189,13 @@ def _summary(c: dict) -> dict:
         expected_high = sent / 2 if sent else 0
         recall = (highs_received / expected_high) if expected_high else 0.0
         pf["recall_high"] = recall >= crit["min_recall_high"]
+    if "min_sign_decision_rate" in crit:
+        sign_required = tag_counts.get("x402-sign-required", 0)
+        signed_total = sum(signed_ct.values())
+        rate = (signed_total / sign_required) if sign_required else 0.0
+        pf["sign_decision_rate"] = rate >= crit["min_sign_decision_rate"]
+    if "max_cost_usd" in crit:
+        pf["within_cost_cap"] = total_cost <= crit["max_cost_usd"]
     out["pass_criteria"] = crit
     out["checks"] = pf
     out["pass"] = bool(pf) and all(pf.values())
@@ -172,6 +207,10 @@ def _render(summary: dict, raw: list[dict]) -> None:
     (OUT / "raw.ndjson").write_text("\n".join(json.dumps(e) for e in raw))
 
     status = "✅ PASS" if summary.get("pass") else "❌ FAIL"
+    cost_line = (
+        f"- LLM cost: **${summary.get('total_cost_usd', 0):.4f}**"
+        if summary.get("total_cost_usd") else ""
+    )
     md = [
         f"# {status} — {SCENARIO} / {TOPOLOGY}",
         "",
@@ -179,6 +218,10 @@ def _render(summary: dict, raw: list[dict]) -> None:
         f"- Events sent: **{summary['events_sent']}**",
         f"- Drain errors: **{summary['drain_errors']}**",
         f"- Federation forwards: **{summary['federated_messages']}**",
+    ]
+    if cost_line:
+        md.append(cost_line)
+    md += [
         "",
         "## Delivery",
         "",

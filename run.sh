@@ -2,12 +2,15 @@
 # Kite agent integration test runner.
 #
 # Usage:
-#   ./run.sh                                 # shared-bus, scripted, ping-pong
-#   ./run.sh --federated                     # federated topology
-#   ./run.sh --scenario filter               # pick a specific scenario
-#   ./run.sh --duration 60                   # override judge observation window
-#   ./run.sh --model-matrix --models a/b,c/d # LLM-scored runs (future)
-#   ./run.sh --keep                          # leave containers up for poking
+#   ./run.sh                                        # shared-bus, scripted, ping-pong
+#   ./run.sh --federated                            # federated topology
+#   ./run.sh --scenario filter                      # pick a specific scenario
+#   ./run.sh --duration 60                          # observation window seconds
+#   ./run.sh --model-matrix                         # switch agents to LLM mode
+#   ./run.sh --models anthropic/claude-haiku-4-5    # per-run model (single)
+#   ./run.sh --max-cost-usd 1.00                    # hard cost cap (model mode)
+#   ./run.sh --scenario x402-onboarding --model-matrix
+#   ./run.sh --keep                                 # leave containers up for poking
 
 set -euo pipefail
 
@@ -16,33 +19,47 @@ TOPOLOGY="shared-bus"
 SCENARIO="ping-pong"
 DURATION="45"
 MODE="scripted"
-MODELS=""
+MODEL="${AGENT_MODEL:-anthropic/claude-haiku-4-5}"
+MAX_COST="${MAX_COST_USD:-0}"
 KEEP="${KITE_TEST_KEEP:-0}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --federated)    TOPOLOGY="federated"; SCENARIO="federation-roundtrip"; shift ;;
-    --scenario)     SCENARIO="$2"; shift 2 ;;
-    --duration)     DURATION="$2"; shift 2 ;;
-    --model-matrix) MODE="model-matrix"; shift ;;
-    --models)       MODELS="$2"; shift 2 ;;
-    --keep)         KEEP=1; shift ;;
-    -h|--help)      sed -n '2,12p' "$0"; exit 0 ;;
-    *)              echo "unknown flag: $1" >&2; exit 2 ;;
+    --federated)     TOPOLOGY="federated"; SCENARIO="federation-roundtrip"; shift ;;
+    --scenario)      SCENARIO="$2"; shift 2 ;;
+    --duration)      DURATION="$2"; shift 2 ;;
+    --model-matrix)  MODE="model"; shift ;;
+    --models)        MODEL="$2"; shift 2 ;;
+    --max-cost-usd)  MAX_COST="$2"; shift 2 ;;
+    --keep)          KEEP=1; shift ;;
+    -h|--help)       sed -n '2,14p' "$0"; exit 0 ;;
+    *)               echo "unknown flag: $1" >&2; exit 2 ;;
   esac
 done
+
+# Model mode requires an API key. Fail early rather than at container start.
+if [[ "$MODE" == "model" && -z "${OPENROUTER_API_KEY:-}" ]]; then
+  echo "::error::--model-matrix needs OPENROUTER_API_KEY in the env" >&2
+  exit 2
+fi
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT_DIR="${KITE_TEST_RESULTS:-${ROOT}/results}/${SCENARIO}-${TOPOLOGY}-${STAMP}"
 mkdir -p "$OUT_DIR"
 
-echo "topology=$TOPOLOGY scenario=$SCENARIO duration=${DURATION}s results=$OUT_DIR"
+echo "topology=$TOPOLOGY scenario=$SCENARIO mode=$MODE duration=${DURATION}s results=$OUT_DIR"
+if [[ "$MODE" == "model" ]]; then
+  echo "model=$MODEL max_cost_usd=$MAX_COST"
+fi
 
 COMPOSE_FILE="${ROOT}/compose/${TOPOLOGY}.yml"
 [[ -f "$COMPOSE_FILE" ]] || { echo "::error::no compose file at $COMPOSE_FILE"; exit 1; }
 
 export KITE_SERVER_IMAGE="${KITE_SERVER_IMAGE:-ghcr.io/alpha-centauri-cyberspace/kite-server-server:latest}"
-export SCENARIO AGENT_MODE="$MODE" JUDGE_DURATION_SEC="$DURATION" OUT_DIR
+export SCENARIO AGENT_MODE="$MODE" AGENT_MODEL="$MODEL" MAX_COST_USD="$MAX_COST"
+export JUDGE_DURATION_SEC="$DURATION" OUT_DIR
+# Pass through OPENROUTER_API_KEY if set (model mode).
+export OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}"
 PROJECT="kite-test-${TOPOLOGY}"
 
 cleanup() {

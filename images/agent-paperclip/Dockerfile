@@ -11,6 +11,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl jq bash python3 python3-pip python3-websockets \
+      python3-httpx \
   && rm -rf /var/lib/apt/lists/*
 
 RUN set -e; \
@@ -24,6 +25,7 @@ RUN set -e; \
 
 COPY entrypoint.sh /entrypoint.sh
 COPY scripted-subscriber.py /opt/scripted-subscriber.py
+COPY model-subscriber.py /opt/model-subscriber.py
 RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]

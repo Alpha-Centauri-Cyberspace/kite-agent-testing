@@ -90,6 +90,10 @@ services:
       KITE_HTTP_URL: http://kite-server:7700
       AGENT_MODE: ${AGENT_MODE:-scripted}
       SCENARIO: ${SCENARIO:-ping-pong}
+      # Model-mode inputs (ignored when AGENT_MODE=scripted).
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      AGENT_MODEL: ${AGENT_MODEL:-anthropic/claude-haiku-4-5}
+      MAX_COST_USD: ${MAX_COST_USD:-0}
     networks: [mesh]
 
   agent-paperclip:
@@ -106,6 +110,10 @@ services:
       KITE_HTTP_URL: http://kite-server:7700
       AGENT_MODE: ${AGENT_MODE:-scripted}
       SCENARIO: ${SCENARIO:-ping-pong}
+      # Model-mode inputs (ignored when AGENT_MODE=scripted).
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      AGENT_MODEL: ${AGENT_MODEL:-anthropic/claude-haiku-4-5}
+      MAX_COST_USD: ${MAX_COST_USD:-0}
     networks: [mesh]
 
   judge:

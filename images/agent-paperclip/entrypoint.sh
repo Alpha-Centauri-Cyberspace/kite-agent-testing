@@ -29,8 +29,13 @@ fi
 set -a; . "$env_file"; set +a
 
 case "$AGENT_MODE" in
-  scripted|model)
+  scripted)
     exec python3 /opt/scripted-subscriber.py
+    ;;
+  model)
+    : "${OPENROUTER_API_KEY:?AGENT_MODE=model needs OPENROUTER_API_KEY}"
+    : "${AGENT_MODEL:=anthropic/claude-haiku-4-5}"
+    exec python3 /opt/model-subscriber.py
     ;;
   *)
     echo "::error::unknown AGENT_MODE: $AGENT_MODE" >&2
