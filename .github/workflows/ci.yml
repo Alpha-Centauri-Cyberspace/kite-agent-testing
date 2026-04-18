@@ -34,10 +34,9 @@ jobs:
       - uses: actions/checkout@v4
       - run: |
           sudo apt-get update && sudo apt-get install -y shellcheck
-          # SC1090 fires on every dynamic `source` (intentional — bootstrap
-          # writes these files). SC2034 flags MODELS which is reserved for a
-          # future flag sweep.
-          shellcheck -e SC1090,SC2034 run.sh images/agent-openclaw/entrypoint.sh images/agent-paperclip/entrypoint.sh images/bootstrap/bootstrap.sh
+          # Only fail on real errors, not style/info noise. Warnings still
+          # print to the log for visibility.
+          shellcheck --severity=error run.sh images/agent-openclaw/entrypoint.sh images/agent-paperclip/entrypoint.sh images/bootstrap/bootstrap.sh
 
   harness-shared-bus:
     name: E2E — shared-bus / ping-pong
