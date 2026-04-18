@@ -1,0 +1,16 @@
+name: federation-roundtrip
+description: |
+  Drain → kite-server-A → openclaw subscribes to A, federates to B →
+  paperclip subscribes to B and receives. Validates end-to-end federation.
+
+topology: federated
+duration_sec: 90
+
+steps:
+  - drain target: kite-server-a
+  - expect: openclaw receives from A
+  - expect: paperclip receives from B via openclaw federation bridge
+
+pass_criteria:
+  min_delivery_pct: 90
+  max_p95_latency_ms: 5000

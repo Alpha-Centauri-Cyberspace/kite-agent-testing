@@ -1,0 +1,16 @@
+name: ping-pong
+description: |
+  Agent A receives a `push` event from the drain and forwards it to agent B.
+  Agent B should echo the event back via its action channel.
+
+topology: shared-bus
+duration_sec: 60
+
+steps:
+  - expect: drain emits >= 30 events
+  - expect: agent-openclaw receives >= 30 events
+  - expect: agent-paperclip receives >= 30 events via agent-openclaw forward
+
+pass_criteria:
+  min_delivery_pct: 95
+  max_p95_latency_ms: 2000

@@ -1,0 +1,15 @@
+name: filter
+description: |
+  Agents only act on events where `importance=high`. Drain emits a mix of
+  `high` and `low`; judge validates only highs were actioned.
+
+topology: shared-bus
+duration_sec: 60
+
+steps:
+  - drain_ratio: {high: 1, low: 4}
+  - expect: agents only act on high events
+
+pass_criteria:
+  false_positive_rate_max: 0
+  recall_min: 0.95

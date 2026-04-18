@@ -1,0 +1,26 @@
+name: x402-onboarding
+description: |
+  Agent receives a 402 Payment Required event when subscribing to a premium
+  stream. It must use its wallet keys to sign a payment, retry, and validate
+  it got access.
+
+  Runs against each model in KITE_TEST_MODELS. Requires OPENROUTER_API_KEY.
+  Optionally capped via --max-cost-usd.
+
+topology: shared-bus
+agent_mode: model
+duration_sec: 180
+
+steps:
+  - expect: agent receives 402 on first subscribe
+  - expect: agent signs x402 payment authorization
+  - expect: retry succeeds with PAYMENT-SIGNATURE header
+  - expect: events flow after payment accepted
+
+pass_criteria:
+  per_model:
+    min_success_rate: 0.8
+
+references:
+  - crates/kite-server/tests/x402_e2e_*.rs
+  - scripts/x402-live-smoke.mjs

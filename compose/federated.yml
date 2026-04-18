@@ -1,0 +1,84 @@
+# Federated topology: two independent kite-servers bridged via `kite stream
+# --federation-target`. Drain hits server-A. Agent-openclaw subscribes to
+# server-A and federates to server-B. Agent-paperclip subscribes to server-B.
+
+services:
+  postgres-a:
+    image: postgres:17
+    environment: { POSTGRES_DB: kite, POSTGRES_USER: kite, POSTGRES_PASSWORD: kite }
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U kite -d kite"], interval: 3s, retries: 30 }
+    networks: [mesh]
+
+  postgres-b:
+    image: postgres:17
+    environment: { POSTGRES_DB: kite, POSTGRES_USER: kite, POSTGRES_PASSWORD: kite }
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U kite -d kite"], interval: 3s, retries: 30 }
+    networks: [mesh]
+
+  kite-server-a:
+    image: ${KITE_SERVER_IMAGE:-ghcr.io/alpha-centauri-cyberspace/kite-server-server:latest}
+    depends_on: { postgres-a: { condition: service_healthy } }
+    environment:
+      DATABASE_URL: postgres://kite:kite@postgres-a:5432/kite
+      KITE_PORT: 7700
+      KITE_INSTANCE_ID: server-a
+    networks: [mesh]
+    healthcheck: { test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"], interval: 5s, retries: 20 }
+
+  kite-server-b:
+    image: ${KITE_SERVER_IMAGE:-ghcr.io/alpha-centauri-cyberspace/kite-server-server:latest}
+    depends_on: { postgres-b: { condition: service_healthy } }
+    environment:
+      DATABASE_URL: postgres://kite:kite@postgres-b:5432/kite
+      KITE_PORT: 7700
+      KITE_INSTANCE_ID: server-b
+    networks: [mesh]
+    healthcheck: { test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"], interval: 5s, retries: 20 }
+
+  bootstrap:
+    image: alpine:3.20
+    depends_on:
+      kite-server-a: { condition: service_healthy }
+      kite-server-b: { condition: service_healthy }
+    volumes: [kite-env:/run/kite-env]
+    command: ["sh", "-c", "echo 'TODO Chunk 5: bootstrap teams on both servers + federation bridge' && sleep 1"]
+    networks: [mesh]
+
+  drain:
+    build: ../images/fake-drain
+    depends_on: [bootstrap]
+    environment:
+      KITE_HOOK_URL: http://kite-server-a:8080
+      DRAIN_SCHEDULE: "5/sec"
+      DRAIN_SOURCE: github
+    networks: [mesh]
+
+  agent-openclaw:
+    build: ../images/agent-openclaw
+    depends_on: [bootstrap]
+    volumes: [kite-env:/run/kite-env:ro, ../scenarios:/scenarios:ro]
+    environment:
+      KITE_WS_URL: ws://kite-server-a:7700/ws
+      FEDERATION_TARGET: ws://kite-server-b:7700/ws
+      AGENT_MODE: ${AGENT_MODE:-scripted}
+    networks: [mesh]
+
+  agent-paperclip:
+    build: ../images/agent-paperclip
+    depends_on: [bootstrap]
+    volumes: [kite-env:/run/kite-env:ro, ../scenarios:/scenarios:ro]
+    environment:
+      KITE_WS_URL: ws://kite-server-b:7700/ws
+      AGENT_MODE: ${AGENT_MODE:-scripted}
+    networks: [mesh]
+
+  judge:
+    build: ../judge
+    depends_on: [agent-openclaw, agent-paperclip, drain]
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock", "${OUT_DIR:-/tmp/kite-results}:/out"]
+    environment:
+      SCENARIO: ${SCENARIO:-federation-roundtrip}
+    networks: [mesh]
+
+volumes: { kite-env: {} }
+networks: { mesh: { driver: bridge } }

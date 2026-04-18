@@ -1,0 +1,100 @@
+# Shared-bus topology: both agents subscribe to the same kite-server.
+#
+# Chunk 5. Bootstrap sidecar creates team + hook tokens + scoped API keys,
+# writes them to a shared /run/kite-env volume that agent containers source.
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: kite
+      POSTGRES_USER: kite
+      POSTGRES_PASSWORD: kite
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kite -d kite"]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+    networks: [mesh]
+
+  kite-server:
+    image: ${KITE_SERVER_IMAGE:-ghcr.io/alpha-centauri-cyberspace/kite-server-server:latest}
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgres://kite:kite@postgres:5432/kite
+      KITE_PORT: 7700
+      RUST_LOG: info,kite_server=debug
+    ports:
+      - "127.0.0.1:7700:7700"
+      - "127.0.0.1:8080:8080"
+    networks: [mesh]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      interval: 5s
+      retries: 20
+
+  # TODO(Chunk 5): bootstrap sidecar that hits server admin API (or direct SQL)
+  # to create team+tokens, writes env to /run/kite-env volume.
+  bootstrap:
+    image: alpine:3.20
+    depends_on:
+      kite-server: { condition: service_healthy }
+    volumes:
+      - kite-env:/run/kite-env
+    command: ["sh", "-c", "echo 'TODO bootstrap sidecar' && sleep 1"]
+    networks: [mesh]
+
+  drain:
+    build: ../images/fake-drain
+    depends_on:
+      - bootstrap
+    environment:
+      KITE_HOOK_URL: http://kite-server:8080
+      DRAIN_SCHEDULE: "5/sec"
+      DRAIN_SOURCE: github
+    networks: [mesh]
+
+  agent-openclaw:
+    build: ../images/agent-openclaw
+    depends_on:
+      - bootstrap
+    volumes:
+      - kite-env:/run/kite-env:ro
+      - ../scenarios:/scenarios:ro
+    environment:
+      KITE_WS_URL: ws://kite-server:7700/ws
+      AGENT_MODE: ${AGENT_MODE:-scripted}
+    networks: [mesh]
+
+  agent-paperclip:
+    build: ../images/agent-paperclip
+    depends_on:
+      - bootstrap
+    volumes:
+      - kite-env:/run/kite-env:ro
+      - ../scenarios:/scenarios:ro
+    environment:
+      KITE_WS_URL: ws://kite-server:7700/ws
+      AGENT_MODE: ${AGENT_MODE:-scripted}
+    networks: [mesh]
+
+  judge:
+    build: ../judge
+    depends_on:
+      - agent-openclaw
+      - agent-paperclip
+      - drain
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${OUT_DIR:-/tmp/kite-results}:/out
+    environment:
+      SCENARIO: ${SCENARIO:-ping-pong}
+    networks: [mesh]
+
+volumes:
+  kite-env:
+
+networks:
+  mesh:
+    driver: bridge

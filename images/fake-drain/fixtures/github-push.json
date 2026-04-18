@@ -1,0 +1,22 @@
+{
+  "ref": "refs/heads/main",
+  "before": "0000000000000000000000000000000000000000",
+  "after":  "1111111111111111111111111111111111111111",
+  "repository": {
+    "id": 1,
+    "name": "test-repo",
+    "full_name": "kite/test-repo",
+    "private": false
+  },
+  "pusher": {
+    "name": "drain",
+    "email": "drain@kite-agent-testing.invalid"
+  },
+  "commits": [
+    {
+      "id": "1111111111111111111111111111111111111111",
+      "message": "test commit",
+      "timestamp": "2026-01-01T00:00:00Z"
+    }
+  ]
+}
