@@ -1,64 +1,154 @@
 # kite-agent-integration-tests
 
-End-to-end integration test suite for the [Kite](https://github.com/Alpha-Centauri-Cyberspace) ecosystem. Validates the two highest-risk flows:
+End-to-end integration test harness for the [Kite](https://github.com/Alpha-Centauri-Cyberspace) ecosystem. Validates the two highest-risk flows:
 
-1. **Agent onboarding** — an AI agent installs `kite-cli` from the public installer, configures itself via env vars (no interactive login), subscribes to a webhook stream, and starts doing work.
-2. **Agent-to-agent communication** — tested in both topologies kite supports:
-   - **Shared bus** (both agents on one kite-server)
-   - **Federated** (each agent on its own kite-server, bridged via `kite stream --federation-target`)
+1. **Onboarding** — an agent container installs `kite-cli` (or stands in with a scripted subscriber), pulls its env contract from a shared volume populated by a bootstrap sidecar, and subscribes to a Kite WebSocket stream.
+2. **Agent-to-agent communication** — in both supported topologies:
+   - **Shared bus** — both agents on one kite-server, both subscribed to the same team.
+   - **Federated** — each agent on its own kite-server, bridged via federation primitives.
 
 ## Quick start
 
+Prerequisites:
+
+- Docker + Docker Compose v2.
+- `docker login ghcr.io -u <user>` with a PAT that has `read:packages` on `Alpha-Centauri-Cyberspace` (kite-server is a private image). A suitable token lives in Infisical at `/infrastructure/GH_PACKAGES_TOKEN`.
+- On Apple Silicon: the kite-server image is x86_64-only, so everything runs under Rosetta emulation automatically.
+
 ```bash
-./run.sh                                # shared-bus scripted scenarios (fast, deterministic)
-./run.sh --federated                    # federated topology scripted scenarios
-./run.sh --model-matrix \
-  --models anthropic/claude-opus-4-7,openai/gpt-5.2   # x402-centered LLM scenarios
+# Shared-bus + ping-pong scenario (default)
+./run.sh
+
+# Filter scenario (only high-importance events should be acted on)
+./run.sh --scenario filter
+
+# Federated topology
+./run.sh --federated
+
+# Longer observation window (default 45s)
+./run.sh --duration 90
+
+# Leave the stack up after the run for inspection
+./run.sh --keep
 ```
 
-Results land in `results/<timestamp>/summary.md`.
+Results land in `results/<scenario>-<topology>-<ts>/{summary.md,summary.json,raw.ndjson}`.
+
+### First run
+
+`./run.sh` will:
+
+1. Build the local images (bootstrap, fake-drain, agent-openclaw, agent-paperclip, judge) the first time — ~2 minutes.
+2. `docker compose up -d --wait` the stack; kite-server cold-starts under emulation in ~90s on Apple Silicon, `start_period: 180s` accommodates that.
+3. Run the judge inline for `$DURATION` seconds, tailing every container's JSON log lines.
+4. Tear down automatically at exit (unless `--keep` is passed).
+
+Exit code: **0** if the run passed its scenario criteria, **1** otherwise.
 
 ## Architecture
 
 ```
 compose/
-  shared-bus.yml         1 postgres + 1 kite-server + 2 agents + drain + judge
-  federated.yml          2 postgres + 2 kite-server + 2 agents + drain + judge
+  shared-bus.yml          1 postgres + 1 kite-server + bootstrap + drain + 2 agents + judge
+  federated.yml           2 postgres + 2 kite-server + 2 bootstraps + drain + 2 agents + judge
+  postgres-init/          runs before kite-server: CREATE EXTENSION pgcrypto
 
 images/
-  agent-openclaw/        Debian + openclaw + kite install + entrypoint
-  agent-paperclip/       Debian + paperclip + kite install + entrypoint
-  fake-drain/            ~50-line webhook firehose
+  bootstrap/              one-shot: seeds team, api_keys, hook_configs, subscriptions; writes
+                          /run/kite-env/<agent>.env + /run/kite-env/teams.env
+  fake-drain/             python webhook firehose, signs with HMAC-SHA256 using the hook token
+  agent-openclaw/         scripted WS subscriber tagged {"agent":"openclaw"}
+  agent-paperclip/        scripted WS subscriber tagged {"agent":"paperclip"}
 
+judge/                    docker-sdk log tailer + correlator + markdown/json report writer
 scenarios/
-  scripted/*.yaml        Deterministic; no LLM calls
-  model-matrix/*.yaml    x402-gated access tests against OpenRouter models
-
-judge/                   Log tailer + correlator + report generator
-run.sh                   Entry point
+  scripted/*.yaml         deterministic test definitions
+  model-matrix/*.yaml     x402-centered LLM scenarios (scaffolded; scripted fallback today)
+run.sh                    entry point
 ```
 
-Kite server image source: `ghcr.io/alpha-centauri-cyberspace/kite-server-server:<tag>` (published by the `kite-server` repo on every push to main).
+### Chunk status
 
-## Status
+| Chunk | Status |
+|---|---|
+| 1 — GHCR publish for kite-server | already satisfied by `kite-server`'s `docker.yml` |
+| 2 — agent-openclaw container | scripted subscriber (model mode falls back to scripted) |
+| 3 — agent-paperclip container | scripted subscriber |
+| 4 — fake-drain | signs with HMAC-SHA256, configurable rate, 2 fixtures (high/low) |
+| 5 — bootstrap sidecar | seeds team + api key + hook config (encrypted webhook secret) + active `free` subscription |
+| 6 — judge | correlates drain/agent events, computes delivery %, scenario breakdown, writes md + json |
+| 7 — scripted scenarios + `run.sh` | ping-pong, filter, federation-roundtrip; full up/run/tear-down lifecycle |
 
-- [x] Chunk 1 — GHCR publish workflow (already satisfied by `kite-server`'s `docker.yml`)
-- [ ] Chunk 2 — `images/agent-openclaw/` Dockerfile + entrypoint
-- [ ] Chunk 3 — `images/agent-paperclip/` Dockerfile + entrypoint
-- [ ] Chunk 4 — `images/fake-drain/` webhook firehose
-- [ ] Chunk 5 — `compose/shared-bus.yml` + `compose/federated.yml`
-- [ ] Chunk 6 — `judge/` orchestrator + report generator
-- [ ] Chunk 7 — `scenarios/scripted/*.yaml` + `scenarios/model-matrix/*.yaml` + `run.sh`
+Model-matrix scenarios (x402 onboarding + multi-model judging) are scaffolded but currently exercise the scripted path — openclaw/paperclip CLI installer URLs and `ANTHROPIC_BASE_URL` overrides need to be pinned before turning them on.
 
-Skeletons are in place for parallel agent development on git worktrees. Each chunk has a pinned interface contract in its directory's `README.md`.
+## Env contract
 
-## Reference
+Every agent container sources `/run/kite-env/<AGENT_NAME>.env`, populated by bootstrap:
 
-- Plan: [`/Users/john/.claude/plans/do-you-think-we-lively-otter.md`](https://github.com/Alpha-Centauri-Cyberspace) (local)
-- Kite CLI: https://github.com/Alpha-Centauri-Cyberspace/kite-cli
-- Kite server: internal
-- Kite protocol: https://crates.io/crates/kite-protocol
+```
+KITE_TEAM_ID=<team>
+KITE_API_KEY=kite_<prefix>_<secret>
+KITE_HOOK_TOKEN=khk_<prefix>_<secret>
+```
+
+Plus these from docker-compose:
+
+```
+KITE_WS_URL=ws://kite-server:7700/ws
+KITE_HTTP_URL=http://kite-server:7700
+AGENT_MODE=scripted|model
+SCENARIO=<name>
+FEDERATION_TARGET_URL=<optional>
+```
+
+## Judge log contract
+
+One JSON object per stdout line. Drain emits:
+
+```json
+{"drain_event_id":"...", "fixture":"github-push-high", "sent_at":"2026-...", "status_code":200, "latency_ms":42}
+```
+
+Agents emit, per lifecycle step:
+
+```json
+{"agent":"openclaw", "ts":"2026-...", "evt":"received",   "seq":42, "scenario_tag":"filter-match", "importance":"high"}
+{"agent":"openclaw", "ts":"2026-...", "evt":"responded",  "seq":42, "scenario_tag":"filter-match"}
+{"agent":"openclaw", "ts":"2026-...", "evt":"skipped",    "reason":"filter", "scenario_tag":"filter-noise"}
+```
+
+## Pass criteria
+
+Per-scenario, in `judge/judge.py`:
+
+| Scenario | Criteria |
+|---|---|
+| `ping-pong` | both agents ≥ 90% delivery |
+| `filter` | `filter-match` events recall ≥ 90%, `filter-noise` false-positive rate ≤ 5% |
+| `federation-roundtrip` | openclaw delivery ≥ 85%, paperclip delivery (via federation) ≥ 75% |
+
+Thresholds are deliberately lenient; tighten when the harness lands in CI.
+
+## Known gotchas
+
+- **pgcrypto must be installed before kite-server starts** — `compose/postgres-init/001-pgcrypto.sql` handles this. Without it, kite-server's federation outbox worker spams `pgp_sym_decrypt(text, text) does not exist` and webhook verification may silently 403.
+- **Rate limits** — the default `KITE_TEAM_RATE_LIMIT` is 100/window. The compose bumps it to 100k so the drain can fire at 5/sec without a flood of 429s. Real prod uses the default.
+- **Subscription required** — the `/hooks` ingest returns 403 if the team has no active subscription. Bootstrap creates a `free`-plan subscription automatically.
+- **Webhook secret** — github-source signatures are verified against `webhook_secret_ciphertext`. Bootstrap sets this to the same value as the hook token (encrypted with `KITE_HOOK_SECRET_CIPHER_KEY`), so the drain can sign with the hook token and the server can verify.
+
+## Local dev loop
+
+```bash
+# tail one container
+docker compose -f compose/shared-bus.yml -p kite-test-shared-bus logs -f agent-openclaw
+
+# open a shell in a running agent
+docker compose -f compose/shared-bus.yml -p kite-test-shared-bus exec agent-openclaw bash
+
+# seed more scenarios: add a YAML under scenarios/scripted/ and a matching
+# entry to PASS_CRITERIA in judge/judge.py
+```
 
 ## License
 
-MIT — see [`LICENSE`](./LICENSE).
+MIT.
