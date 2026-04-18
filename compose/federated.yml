@@ -21,7 +21,6 @@ services:
 
   kite-server-a:
     image: ${KITE_SERVER_IMAGE:-ghcr.io/alpha-centauri-cyberspace/kite-server-server:latest}
-    platform: ${KITE_SERVER_PLATFORM:-linux/amd64}
     depends_on: { postgres-a: { condition: service_healthy } }
     environment:
       DATABASE_URL: postgres://kite:kite@postgres-a:5432/kite
@@ -37,7 +36,6 @@ services:
 
   kite-server-b:
     image: ${KITE_SERVER_IMAGE:-ghcr.io/alpha-centauri-cyberspace/kite-server-server:latest}
-    platform: ${KITE_SERVER_PLATFORM:-linux/amd64}
     depends_on: { postgres-b: { condition: service_healthy } }
     environment:
       DATABASE_URL: postgres://kite:kite@postgres-b:5432/kite

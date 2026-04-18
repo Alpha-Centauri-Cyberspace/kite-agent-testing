@@ -20,10 +20,6 @@ services:
 
   kite-server:
     image: ${KITE_SERVER_IMAGE:-ghcr.io/alpha-centauri-cyberspace/kite-server-server:latest}
-    # kite-server GHCR image is published x86_64-only today; run under
-    # emulation on Apple Silicon / ARM hosts. Remove once the image goes
-    # multi-arch.
-    platform: ${KITE_SERVER_PLATFORM:-linux/amd64}
     depends_on:
       postgres: { condition: service_healthy }
     environment:
