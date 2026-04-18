@@ -1,39 +1,39 @@
 #!/usr/bin/env bash
-# Same env contract as agent-openclaw. Emits JSON lines tagged
-# {"agent":"paperclip",...}.
+# Pinned env contract for agent containers:
+#   AGENT_NAME           openclaw | paperclip
+#   AGENT_ENV_FILE       /run/kite-env/<agent>.env  (written by bootstrap)
+#   KITE_WS_URL          ws://kite-server:7700/ws
+#   KITE_HTTP_URL        http://kite-server:7700
+#   AGENT_MODE           scripted | model   (default scripted)
+#   SCENARIO             ping-pong | filter | federation-roundtrip | ...
+#   FEDERATION_TARGET_URL  optional; federated topology
 #
-# Kite → paperclip sink shape is already known from kite-cli:
-#   crates/kite-cli/src/sinks/paperclip.rs
-#   sink: { type: paperclip, api_url, company_id, agent_id }
+# Scripted mode: runs scripted-subscriber.py, a plain python websockets client
+# emitting JSON log lines per lifecycle step.
+# Model mode: placeholder — falls back to scripted until the openclaw
+# installer + ANTHROPIC_BASE_URL override is verified.
 
 set -euo pipefail
 
-: "${KITE_API_KEY:?required}"
-: "${KITE_TEAM_ID:?required}"
+: "${AGENT_NAME:?required}"
 : "${KITE_WS_URL:?required}"
+: "${SCENARIO:=ping-pong}"
 : "${AGENT_MODE:=scripted}"
 
-if ! command -v kite >/dev/null 2>&1; then
-  curl -fsSL https://getkite.sh/install | sh
-  export PATH="$PATH:$HOME/.kite/bin:/usr/local/bin"
+env_file="${AGENT_ENV_FILE:-/run/kite-env/${AGENT_NAME}.env}"
+if [[ ! -f "$env_file" ]]; then
+  echo "::error::agent env file missing at $env_file — did bootstrap run?" >&2
+  exit 1
 fi
+# shellcheck disable=SC1090
+set -a; . "$env_file"; set +a
 
-mkdir -p "$HOME/.config/kite"
-cat > "$HOME/.config/kite/config.toml" <<EOF
-api_key = "${KITE_API_KEY}"
-team_id = "${KITE_TEAM_ID}"
-ws_url  = "${KITE_WS_URL}"
-EOF
-
-case "${AGENT_MODE}" in
-  scripted)
-    # TODO(Chunk 3): kite stream + scenario-driven paperclip action
-    exec kite stream --json
+case "$AGENT_MODE" in
+  scripted|model)
+    exec python3 /opt/scripted-subscriber.py
     ;;
-  model)
-    : "${OPENROUTER_API_KEY:?required for model mode}"
-    : "${AGENT_MODEL:?required for model mode}"
-    echo '{"agent":"paperclip","evt":"model-mode-not-implemented","model":"'"${AGENT_MODEL}"'"}'
-    exit 0
+  *)
+    echo "::error::unknown AGENT_MODE: $AGENT_MODE" >&2
+    exit 1
     ;;
 esac

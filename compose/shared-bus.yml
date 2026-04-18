@@ -1,7 +1,8 @@
 # Shared-bus topology: both agents subscribe to the same kite-server.
 #
-# Chunk 5. Bootstrap sidecar creates team + hook tokens + scoped API keys,
-# writes them to a shared /run/kite-env volume that agent containers source.
+# Bootstrap sidecar seeds one team with two scoped API keys (one per agent)
+# and one GitHub hook token; fake-drain posts to that team's hook, both
+# agents receive via WebSocket.
 
 services:
   postgres:
@@ -19,64 +20,92 @@ services:
 
   kite-server:
     image: ${KITE_SERVER_IMAGE:-ghcr.io/alpha-centauri-cyberspace/kite-server-server:latest}
+    # kite-server GHCR image is published x86_64-only today; run under
+    # emulation on Apple Silicon / ARM hosts. Remove once the image goes
+    # multi-arch.
+    platform: ${KITE_SERVER_PLATFORM:-linux/amd64}
     depends_on:
       postgres: { condition: service_healthy }
     environment:
       DATABASE_URL: postgres://kite:kite@postgres:5432/kite
       KITE_PORT: 7700
+      KITE_HOST: 0.0.0.0
       RUST_LOG: info,kite_server=debug
-    ports:
-      - "127.0.0.1:7700:7700"
-      - "127.0.0.1:8080:8080"
+      KITE_HOOK_SECRET_CIPHER_KEY: ${KITE_HOOK_SECRET_CIPHER_KEY:-0123456789abcdef0123456789abcdef}
+      # Bumped from 100/window default so the drain can fire at 5/sec
+      # without hitting the per-team rate limit every few requests.
+      KITE_TEAM_RATE_LIMIT: "100000"
+      KITE_GLOBAL_RATE_LIMIT: "1000000"
     networks: [mesh]
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
-      interval: 5s
-      retries: 20
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:7700/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+      # amd64-under-emulation on Apple Silicon is slow to migrate + boot.
+      start_period: 180s
 
-  # TODO(Chunk 5): bootstrap sidecar that hits server admin API (or direct SQL)
-  # to create team+tokens, writes env to /run/kite-env volume.
   bootstrap:
-    image: alpine:3.20
+    build: ../images/bootstrap
     depends_on:
-      kite-server: { condition: service_healthy }
+      # bootstrap polls for the 'teams' table itself, so it just needs the
+      # DB to be up and the kite-server migrations to have landed. Waiting
+      # on postgres (not kite-server) keeps the dep graph acyclic.
+      postgres: { condition: service_healthy }
+    environment:
+      BOOTSTRAP_DATABASE_URL: postgres://kite:kite@postgres:5432/kite
+      BOOTSTRAP_AGENT_TEAMS: "openclaw=shared paperclip=shared"
+      BOOTSTRAP_OUT_DIR: /run/kite-env
     volumes:
       - kite-env:/run/kite-env
-    command: ["sh", "-c", "echo 'TODO bootstrap sidecar' && sleep 1"]
     networks: [mesh]
+    restart: "no"
 
   drain:
     build: ../images/fake-drain
     depends_on:
-      - bootstrap
+      bootstrap: { condition: service_completed_successfully }
     environment:
-      KITE_HOOK_URL: http://kite-server:8080
-      DRAIN_SCHEDULE: "5/sec"
+      KITE_HOOK_URL: http://kite-server:7700
+      KITE_TEAM_ID: shared
+      DRAIN_SCHEDULE: ${DRAIN_SCHEDULE:-5/sec}
       DRAIN_SOURCE: github
+      DRAIN_ENV_FILE: /run/kite-env/teams.env
+      DRAIN_ENV_VAR: TEAM_SHARED_HOOK_TOKEN
+    volumes:
+      - kite-env:/run/kite-env:ro
     networks: [mesh]
 
   agent-openclaw:
     build: ../images/agent-openclaw
     depends_on:
-      - bootstrap
+      bootstrap: { condition: service_completed_successfully }
     volumes:
       - kite-env:/run/kite-env:ro
       - ../scenarios:/scenarios:ro
     environment:
+      AGENT_NAME: openclaw
+      AGENT_ENV_FILE: /run/kite-env/openclaw.env
       KITE_WS_URL: ws://kite-server:7700/ws
+      KITE_HTTP_URL: http://kite-server:7700
       AGENT_MODE: ${AGENT_MODE:-scripted}
+      SCENARIO: ${SCENARIO:-ping-pong}
     networks: [mesh]
 
   agent-paperclip:
     build: ../images/agent-paperclip
     depends_on:
-      - bootstrap
+      bootstrap: { condition: service_completed_successfully }
     volumes:
       - kite-env:/run/kite-env:ro
       - ../scenarios:/scenarios:ro
     environment:
+      AGENT_NAME: paperclip
+      AGENT_ENV_FILE: /run/kite-env/paperclip.env
       KITE_WS_URL: ws://kite-server:7700/ws
+      KITE_HTTP_URL: http://kite-server:7700
       AGENT_MODE: ${AGENT_MODE:-scripted}
+      SCENARIO: ${SCENARIO:-ping-pong}
     networks: [mesh]
 
   judge:
@@ -90,6 +119,8 @@ services:
       - ${OUT_DIR:-/tmp/kite-results}:/out
     environment:
       SCENARIO: ${SCENARIO:-ping-pong}
+      JUDGE_DURATION_SEC: ${JUDGE_DURATION_SEC:-45}
+      JUDGE_TOPOLOGY: shared-bus
     networks: [mesh]
 
 volumes:

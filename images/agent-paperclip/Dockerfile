@@ -1,23 +1,29 @@
-# Agent container: paperclip + kite-cli
+# Agent container: paperclip persona + kite-cli
 #
-# Chunk 3 of the test harness. Symmetric to agent-openclaw but uses paperclip's
-# runtime. Installer URL TBD — verify against paperclipai CLI docs at build time.
+# Chunk 3. Symmetric to agent-openclaw; AGENT_NAME differs so log lines are
+# tagged {"agent":"paperclip",...} for the judge.
 
 FROM debian:bookworm-slim
 
+ENV DEBIAN_FRONTEND=noninteractive \
+    AGENT_NAME=paperclip \
+    PATH="/root/.kite/bin:/usr/local/bin:/usr/bin:/bin"
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl jq bash \
+      ca-certificates curl jq bash python3 python3-pip python3-websockets \
   && rm -rf /var/lib/apt/lists/*
 
-# TODO(Chunk 3): install paperclip
-# RUN curl -fsSL https://install.paperclip.ai/ | sh
-
-RUN curl -fsSL https://getkite.sh/install | sh || \
-    echo "::warning::getkite.sh/install will install at runtime"
+RUN set -e; \
+    if curl -fsSL --retry 3 --max-time 30 https://getkite.sh/install -o /tmp/install.sh; then \
+      sh /tmp/install.sh || true; \
+      ln -sf /root/.kite/bin/kite /usr/local/bin/kite 2>/dev/null || true; \
+    else \
+      echo '::warning:: getkite.sh/install unreachable at build time'; \
+    fi; \
+    rm -f /tmp/install.sh
 
 COPY entrypoint.sh /entrypoint.sh
+COPY scripted-subscriber.py /opt/scripted-subscriber.py
 RUN chmod +x /entrypoint.sh
-
-ENV AGENT_NAME=paperclip
 
 ENTRYPOINT ["/entrypoint.sh"]

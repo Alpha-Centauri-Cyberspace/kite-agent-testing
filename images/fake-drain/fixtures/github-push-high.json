@@ -3,19 +3,23 @@
   "before": "0000000000000000000000000000000000000000",
   "after":  "1111111111111111111111111111111111111111",
   "repository": {
-    "id": 1,
-    "name": "test-repo",
-    "full_name": "kite/test-repo",
+    "id": 2001,
+    "name": "high-repo",
+    "full_name": "kite/high-repo",
     "private": false
   },
   "pusher": {
     "name": "drain",
     "email": "drain@kite-agent-testing.invalid"
   },
+  "kite_test": {
+    "importance": "high",
+    "scenario_tag": "filter-match"
+  },
   "commits": [
     {
       "id": "1111111111111111111111111111111111111111",
-      "message": "test commit",
+      "message": "production change",
       "timestamp": "2026-01-01T00:00:00Z"
     }
   ]

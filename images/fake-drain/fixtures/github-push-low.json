@@ -1,0 +1,26 @@
+{
+  "ref": "refs/heads/docs-update",
+  "before": "0000000000000000000000000000000000000000",
+  "after":  "2222222222222222222222222222222222222222",
+  "repository": {
+    "id": 2002,
+    "name": "low-repo",
+    "full_name": "kite/low-repo",
+    "private": false
+  },
+  "pusher": {
+    "name": "drain",
+    "email": "drain@kite-agent-testing.invalid"
+  },
+  "kite_test": {
+    "importance": "low",
+    "scenario_tag": "filter-noise"
+  },
+  "commits": [
+    {
+      "id": "2222222222222222222222222222222222222222",
+      "message": "typo fix",
+      "timestamp": "2026-01-01T00:00:00Z"
+    }
+  ]
+}

@@ -1,97 +1,217 @@
 """
-Judge — correlates drain -> agent-A -> agent-B event flow, computes metrics,
-writes /out/summary.md and /out/summary.json.
+Judge — runs for JUDGE_DURATION_SEC, tails every container's stdout in
+parallel, correlates drain → agent-received → agent-responded using the
+embedded drain_event_id + scenario tags, and writes a per-run report.
 
-Pinned log-line contract consumed from each container's stdout:
-  - drain:         {"drain_event_id": "...", "sent_at": "..."}
-  - agent-openclaw {"agent": "openclaw", "evt": "received"|"responded", "drain_event_id": "...", ...}
-  - agent-paperclip {"agent": "paperclip", ...}
+Writes:
+  /out/summary.json   machine-readable metrics + pass/fail
+  /out/summary.md     human-readable
+  /out/raw.ndjson     every log record it collected
 
-Metrics per scenario:
-  - delivery success %
-  - median / p99 end-to-end latency
-  - duplicates, drops
-  - A→B delivery rate (federated only)
-  - errors by category
+Exit code: 0 on pass, 1 on fail.
 """
+
+from __future__ import annotations
 
 import json
 import os
 import pathlib
 import sys
+import threading
+import time
 from collections import defaultdict
 
-import docker  # type: ignore[import-not-found]
+import docker
 
 
 SCENARIO = os.environ.get("SCENARIO", "ping-pong")
-OUT = pathlib.Path("/out")
+TOPOLOGY = os.environ.get("JUDGE_TOPOLOGY", "shared-bus")
+DURATION = int(os.environ.get("JUDGE_DURATION_SEC", "45"))
+OUT_ROOT = pathlib.Path("/out")
+STAMP = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+OUT = OUT_ROOT / f"{SCENARIO}-{TOPOLOGY}-{STAMP}"
+OUT.mkdir(parents=True, exist_ok=True)
+
+PASS_CRITERIA = {
+    "ping-pong": {
+        "min_delivery_openclaw": 0.90,
+        "min_delivery_paperclip": 0.90,
+    },
+    "filter": {
+        "min_recall_high": 0.90,
+        "max_false_positive": 0.05,
+    },
+    "federation-roundtrip": {
+        "min_delivery_openclaw": 0.85,
+        "min_delivery_paperclip_via_federation": 0.75,
+    },
+}
 
 
-def _collect():
-    client = docker.from_env()
-    events = defaultdict(dict)
-    for container in client.containers.list(all=True):
-        name = container.name
-        if not any(tag in name for tag in ("drain", "agent-openclaw", "agent-paperclip")):
-            continue
-        try:
-            logs = container.logs(stream=False).decode("utf-8", errors="replace")
-        except Exception:  # noqa: BLE001
-            continue
-        for line in logs.splitlines():
-            line = line.strip()
-            if not line.startswith("{"):
-                continue
+def _tail_container(container, sink):
+    try:
+        for chunk in container.logs(stream=True, follow=True, since=int(time.time()) - 5):
             try:
-                rec = json.loads(line)
+                line = chunk.decode("utf-8", errors="replace").rstrip()
             except Exception:  # noqa: BLE001
                 continue
-            eid = rec.get("drain_event_id")
-            if not eid:
-                continue
-            if "sent_at" in rec:
-                events[eid]["drain"] = rec
-            elif "agent" in rec:
-                role = rec["agent"]
-                events[eid].setdefault(role, []).append(rec)
+            for sub in line.split("\n"):
+                sub = sub.strip()
+                if not sub.startswith("{"):
+                    continue
+                try:
+                    rec = json.loads(sub)
+                except Exception:  # noqa: BLE001
+                    continue
+                rec["_source_container"] = container.name
+                sink.append(rec)
+    except Exception as e:  # noqa: BLE001
+        sink.append({"_source_container": container.name, "judge_error": str(e)})
+
+
+def _collect(duration: int) -> list[dict]:
+    client = docker.from_env()
+    targets = []
+    for c in client.containers.list():
+        name = c.name
+        if any(tag in name for tag in ("drain", "agent-openclaw", "agent-paperclip", "kite-server")):
+            targets.append(c)
+
+    events: list[dict] = []
+    for c in targets:
+        threading.Thread(target=_tail_container, args=(c, events), daemon=True).start()
+
+    deadline = time.time() + duration
+    while time.time() < deadline:
+        time.sleep(1)
+    time.sleep(1)
     return events
 
 
-def _render(events):
-    sent = sum(1 for e in events.values() if "drain" in e)
-    received_openclaw = sum(1 for e in events.values() if "openclaw" in e)
-    received_paperclip = sum(1 for e in events.values() if "paperclip" in e)
-    summary = {
-        "scenario": SCENARIO,
-        "events_sent": sent,
-        "openclaw_received": received_openclaw,
-        "paperclip_received": received_paperclip,
-        "delivery_pct_openclaw": round(100 * received_openclaw / sent, 2) if sent else 0,
-        "delivery_pct_paperclip": round(100 * received_paperclip / sent, 2) if sent else 0,
+def _classify(events: list[dict]) -> dict:
+    drain_sent: dict[str, dict] = {}
+    received: dict[str, list[dict]] = defaultdict(list)
+    responded: dict[str, list[dict]] = defaultdict(list)
+    skipped: dict[str, list[dict]] = defaultdict(list)
+    federated: list[dict] = []
+    errors: list[dict] = []
+
+    for e in events:
+        if "drain_event_id" in e and "sent_at" in e:
+            drain_sent[e["drain_event_id"]] = e
+        elif "error" in e and "drain_event_id" in e:
+            errors.append(e)
+        agent = e.get("agent")
+        evt = e.get("evt")
+        if agent and evt == "received":
+            received[agent].append(e)
+        elif agent and evt == "responded":
+            responded[agent].append(e)
+        elif agent and evt == "skipped":
+            skipped[agent].append(e)
+        elif agent and evt == "federated":
+            federated.append(e)
+
+    return {
+        "drain_sent": drain_sent,
+        "received": dict(received),
+        "responded": dict(responded),
+        "skipped": dict(skipped),
+        "federated": federated,
+        "drain_errors": errors,
     }
-    OUT.mkdir(parents=True, exist_ok=True)
+
+
+def _summary(c: dict) -> dict:
+    sent = len(c["drain_sent"])
+    rec = {a: len(c["received"].get(a, [])) for a in ("openclaw", "paperclip")}
+    resp = {a: len(c["responded"].get(a, [])) for a in ("openclaw", "paperclip")}
+    skip = {a: len(c["skipped"].get(a, [])) for a in ("openclaw", "paperclip")}
+
+    def pct(a: str) -> float:
+        return round(100 * rec[a] / sent, 2) if sent else 0.0
+
+    tag_counts: dict[str, int] = defaultdict(int)
+    for evts in c["received"].values():
+        for e in evts:
+            tag_counts[e.get("scenario_tag") or "unknown"] += 1
+
+    out = {
+        "scenario": SCENARIO,
+        "topology": TOPOLOGY,
+        "duration_sec": DURATION,
+        "events_sent": sent,
+        "drain_errors": len(c["drain_errors"]),
+        "received": rec,
+        "responded": resp,
+        "skipped": skip,
+        "federated_messages": len(c["federated"]),
+        "delivery_pct": {a: pct(a) for a in ("openclaw", "paperclip")},
+        "scenario_tag_breakdown": dict(tag_counts),
+    }
+
+    crit = PASS_CRITERIA.get(SCENARIO, {})
+    pf: dict[str, bool] = {}
+    if "min_delivery_openclaw" in crit:
+        pf["openclaw_delivery"] = (pct("openclaw") / 100) >= crit["min_delivery_openclaw"]
+    if "min_delivery_paperclip" in crit:
+        pf["paperclip_delivery"] = (pct("paperclip") / 100) >= crit["min_delivery_paperclip"]
+    if "min_recall_high" in crit:
+        highs_received = tag_counts.get("filter-match", 0)
+        expected_high = sent / 2 if sent else 0
+        recall = (highs_received / expected_high) if expected_high else 0.0
+        pf["recall_high"] = recall >= crit["min_recall_high"]
+    out["pass_criteria"] = crit
+    out["checks"] = pf
+    out["pass"] = bool(pf) and all(pf.values())
+    return out
+
+
+def _render(summary: dict, raw: list[dict]) -> None:
     (OUT / "summary.json").write_text(json.dumps(summary, indent=2))
+    (OUT / "raw.ndjson").write_text("\n".join(json.dumps(e) for e in raw))
+
+    status = "✅ PASS" if summary.get("pass") else "❌ FAIL"
     md = [
-        f"# {SCENARIO}",
+        f"# {status} — {SCENARIO} / {TOPOLOGY}",
         "",
-        f"- events sent: **{sent}**",
-        f"- openclaw received: **{received_openclaw}** ({summary['delivery_pct_openclaw']}%)",
-        f"- paperclip received: **{received_paperclip}** ({summary['delivery_pct_paperclip']}%)",
+        f"- Duration: **{DURATION}s**",
+        f"- Events sent: **{summary['events_sent']}**",
+        f"- Drain errors: **{summary['drain_errors']}**",
+        f"- Federation forwards: **{summary['federated_messages']}**",
         "",
-        "## TODO (Chunk 6)",
-        "- latency histograms (p50/p95/p99)",
-        "- duplicate/drop detection",
-        "- A→B federation tracking",
+        "## Delivery",
+        "",
+        "| Agent | Received | Responded | Skipped | Delivery % |",
+        "|---|---|---|---|---|",
     ]
+    for a in ("openclaw", "paperclip"):
+        md.append(
+            f"| {a} | {summary['received'][a]} | {summary['responded'][a]} | "
+            f"{summary['skipped'][a]} | {summary['delivery_pct'][a]}% |"
+        )
+    md += ["", "## Scenario tags observed", "", "| tag | count |", "|---|---|"]
+    for tag, n in summary["scenario_tag_breakdown"].items():
+        md.append(f"| `{tag}` | {n} |")
+    md += ["", "## Pass/fail checks", ""]
+    if summary["checks"]:
+        for k, v in summary["checks"].items():
+            md.append(f"- {'✅' if v else '❌'} **{k}**")
+    else:
+        md.append("_(no pass criteria configured for this scenario)_")
     (OUT / "summary.md").write_text("\n".join(md) + "\n")
-    print(json.dumps(summary))
 
 
 def main() -> int:
-    events = _collect()
-    _render(events)
-    return 0
+    print(f"judge: running for {DURATION}s  scenario={SCENARIO}  topology={TOPOLOGY}", flush=True)
+    raw = _collect(DURATION)
+    print(f"judge: collected {len(raw)} log records", flush=True)
+    classified = _classify(raw)
+    summary = _summary(classified)
+    _render(summary, raw)
+    print(json.dumps(summary), flush=True)
+    print(f"judge: wrote {OUT}", flush=True)
+    return 0 if summary.get("pass", False) else 1
 
 
 if __name__ == "__main__":
