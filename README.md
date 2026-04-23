@@ -1,49 +1,54 @@
-# kite-agent-integration-tests
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://getkite.sh/logo-on-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://getkite.sh/logo-on-light.svg">
+    <img alt="Kite" src="https://getkite.sh/logo-on-dark.svg" width="220">
+  </picture>
 
-End-to-end integration test harness for the [Kite](https://github.com/Alpha-Centauri-Cyberspace) ecosystem. Validates the two highest-risk flows:
+  <h3>End-to-end integration tests for the Kite ecosystem</h3>
 
-1. **Onboarding** — an agent container installs `kite-cli` (or stands in with a scripted subscriber), pulls its env contract from a shared volume populated by a bootstrap sidecar, and subscribes to a Kite WebSocket stream.
+  <p>
+    <a href="https://getkite.sh"><img alt="Website" src="https://img.shields.io/badge/getkite.sh-00ff9d?style=flat-square&labelColor=0a0a0f"></a>
+    <a href="https://github.com/Alpha-Centauri-Cyberspace/kite-cli"><img alt="kite-cli" src="https://img.shields.io/badge/cli-kite--cli-00d4ff?style=flat-square&labelColor=0a0a0f"></a>
+    <a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-e4e4e7?style=flat-square&labelColor=0a0a0f"></a>
+  </p>
+</div>
+
+---
+
+Dockerized harness that spins up a full Kite stack, runs two agent containers against it, and judges the result. It validates the two highest-risk flows in the Kite ecosystem:
+
+1. **Onboarding** — an agent installs `kite-cli` (or a scripted subscriber), pulls its env contract from a shared volume populated by a bootstrap sidecar, and subscribes to a Kite WebSocket stream.
 2. **Agent-to-agent communication** — in both supported topologies:
-   - **Shared bus** — both agents on one kite-server, both subscribed to the same team.
-   - **Federated** — each agent on its own kite-server, bridged via federation primitives.
+   - **Shared bus** — both agents on one `kite-server`, same team.
+   - **Federated** — each agent on its own `kite-server`, bridged via federation primitives.
 
 ## Quick start
 
 Prerequisites:
 
 - Docker + Docker Compose v2.
-- `docker login ghcr.io -u <user>` with a PAT that has `read:packages` on `Alpha-Centauri-Cyberspace` (kite-server is a private image). A suitable token lives in Infisical at `/infrastructure/GH_PACKAGES_TOKEN`.
-- On Apple Silicon: the kite-server image is x86_64-only, so everything runs under Rosetta emulation automatically.
+- `docker login ghcr.io -u <user>` with a PAT that has `read:packages` on `Alpha-Centauri-Cyberspace` (the `kite-server` image is private). A suitable token lives in Infisical at `/infrastructure/GH_PACKAGES_TOKEN`.
+- Apple Silicon: the `kite-server` image is x86_64-only, so everything runs under Rosetta emulation automatically.
 
-```bash
-# Shared-bus + ping-pong scenario (default)
-./run.sh
-
-# Filter scenario (only high-importance events should be acted on)
-./run.sh --scenario filter
-
-# Federated topology
-./run.sh --federated
-
-# Longer observation window (default 45s)
-./run.sh --duration 90
-
-# Leave the stack up after the run for inspection
-./run.sh --keep
+```
+$ ./run.sh                          # shared-bus + ping-pong scenario (default)
+$ ./run.sh --scenario filter        # only high-importance events should be acted on
+$ ./run.sh --federated              # federated topology
+$ ./run.sh --duration 90            # longer observation window (default 45s)
+$ ./run.sh --keep                   # leave the stack up for inspection
 ```
 
 Results land in `results/<scenario>-<topology>-<ts>/{summary.md,summary.json,raw.ndjson}`.
 
-### First run
+### What `./run.sh` does on first run
 
-`./run.sh` will:
+1. Builds the local images (bootstrap, fake-drain, agent-openclaw, agent-paperclip, judge) — ~2 minutes.
+2. `docker compose up -d --wait` the stack; `kite-server` cold-starts under emulation in ~90s on Apple Silicon (`start_period: 180s` covers that).
+3. Runs the judge inline for `$DURATION` seconds, tailing every container's JSON log lines.
+4. Tears down automatically at exit (unless `--keep`).
 
-1. Build the local images (bootstrap, fake-drain, agent-openclaw, agent-paperclip, judge) the first time — ~2 minutes.
-2. `docker compose up -d --wait` the stack; kite-server cold-starts under emulation in ~90s on Apple Silicon, `start_period: 180s` accommodates that.
-3. Run the judge inline for `$DURATION` seconds, tailing every container's JSON log lines.
-4. Tear down automatically at exit (unless `--keep` is passed).
-
-Exit code: **0** if the run passed its scenario criteria, **1** otherwise.
+Exit code is **0** if the scenario criteria pass, **1** otherwise.
 
 ## Architecture
 
@@ -69,15 +74,15 @@ run.sh                    entry point
 
 ### Chunk status
 
-| Chunk | Status |
-|---|---|
-| 1 — GHCR publish for kite-server | already satisfied by `kite-server`'s `docker.yml` |
-| 2 — agent-openclaw container | scripted subscriber (model mode falls back to scripted) |
-| 3 — agent-paperclip container | scripted subscriber |
-| 4 — fake-drain | signs with HMAC-SHA256, configurable rate, 2 fixtures (high/low) |
-| 5 — bootstrap sidecar | seeds team + api key + hook config (encrypted webhook secret) + active `free` subscription |
-| 6 — judge | correlates drain/agent events, computes delivery %, scenario breakdown, writes md + json |
-| 7 — scripted scenarios + `run.sh` | ping-pong, filter, federation-roundtrip; full up/run/tear-down lifecycle |
+| Chunk                                    | Status                                                              |
+| ---------------------------------------- | ------------------------------------------------------------------- |
+| 1 — GHCR publish for kite-server         | satisfied by `kite-server`'s `docker.yml`                           |
+| 2 — agent-openclaw container             | scripted subscriber (model mode falls back to scripted)             |
+| 3 — agent-paperclip container            | scripted subscriber                                                 |
+| 4 — fake-drain                           | HMAC-SHA256 signing, configurable rate, 2 fixtures (high / low)     |
+| 5 — bootstrap sidecar                    | seeds team + api key + hook config + active `free` subscription     |
+| 6 — judge                                | correlates drain/agent events, delivery %, md + json report         |
+| 7 — scripted scenarios + `run.sh`        | ping-pong, filter, federation-roundtrip; full up/run/tear-down      |
 
 Model-matrix scenarios (x402 onboarding + multi-model judging) are scaffolded but currently exercise the scripted path — openclaw/paperclip CLI installer URLs and `ANTHROPIC_BASE_URL` overrides need to be pinned before turning them on.
 
@@ -121,11 +126,11 @@ Agents emit, per lifecycle step:
 
 Per-scenario, in `judge/judge.py`:
 
-| Scenario | Criteria |
-|---|---|
-| `ping-pong` | both agents ≥ 90% delivery |
-| `filter` | `filter-match` events recall ≥ 90%, `filter-noise` false-positive rate ≤ 5% |
-| `federation-roundtrip` | openclaw delivery ≥ 85%, paperclip delivery (via federation) ≥ 75% |
+| Scenario                 | Criteria                                                                             |
+| ------------------------ | ------------------------------------------------------------------------------------ |
+| `ping-pong`              | both agents ≥ 90% delivery                                                           |
+| `filter`                 | `filter-match` events recall ≥ 90%, `filter-noise` false-positive rate ≤ 5%          |
+| `federation-roundtrip`   | openclaw delivery ≥ 85%, paperclip delivery (via federation) ≥ 75%                   |
 
 Thresholds are deliberately lenient; tighten when the harness lands in CI.
 
@@ -138,17 +143,33 @@ Thresholds are deliberately lenient; tighten when the harness lands in CI.
 
 ## Local dev loop
 
-```bash
+```
 # tail one container
-docker compose -f compose/shared-bus.yml -p kite-test-shared-bus logs -f agent-openclaw
+$ docker compose -f compose/shared-bus.yml -p kite-test-shared-bus logs -f agent-openclaw
 
 # open a shell in a running agent
-docker compose -f compose/shared-bus.yml -p kite-test-shared-bus exec agent-openclaw bash
+$ docker compose -f compose/shared-bus.yml -p kite-test-shared-bus exec agent-openclaw bash
 
 # seed more scenarios: add a YAML under scenarios/scripted/ and a matching
 # entry to PASS_CRITERIA in judge/judge.py
 ```
 
+## Related
+
+- **[kite-cli](https://github.com/Alpha-Centauri-Cyberspace/kite-cli)** — the CLI under test.
+- **[kite-protocol](https://github.com/Alpha-Centauri-Cyberspace/kite-protocol)** — wire format the agents speak.
+- **[kite-mesh](https://github.com/Alpha-Centauri-Cyberspace/kite-mesh)** — the P2P discovery companion.
+
 ## License
 
-MIT.
+MIT — see [`LICENSE`](./LICENSE).
+
+---
+
+<div align="center">
+  <sub>
+    <a href="https://getkite.sh">getkite.sh</a> ·
+    <a href="https://github.com/Alpha-Centauri-Cyberspace">github</a> ·
+    <a href="https://getkite.sh/docs">docs</a>
+  </sub>
+</div>
