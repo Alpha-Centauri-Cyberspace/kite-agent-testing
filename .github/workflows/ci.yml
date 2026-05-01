@@ -39,7 +39,7 @@ jobs:
 
   harness-shared-bus:
     name: E2E — shared-bus
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2204
     permissions:
       contents: read
       packages: read
