@@ -13,7 +13,6 @@ jobs:
       - name: Validate compose files
         run: |
           docker compose -f compose/shared-bus.yml config >/dev/null
-          docker compose -f compose/federated.yml config >/dev/null
 
   lint-dockerfiles:
     runs-on: ubuntu-latest
@@ -39,12 +38,12 @@ jobs:
           shellcheck --severity=error run.sh images/agent-openclaw/entrypoint.sh images/agent-paperclip/entrypoint.sh images/bootstrap/bootstrap.sh
 
   harness-shared-bus:
-    name: E2E — shared-bus / ping-pong
+    name: E2E — shared-bus
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: read
-    timeout-minutes: 10
+    timeout-minutes: 15
     # The kite-server GHCR image is private. The default GITHUB_TOKEN does
     # NOT get packages:read on another repo's packages — you must link the
     # `kite-server-server` package to this repo via GitHub UI
@@ -54,6 +53,10 @@ jobs:
     # Once linked, the job below will succeed. Until then it runs as a
     # non-blocking advisory.
     continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [ping-pong, filter, a2a-ping-pong]
     steps:
       - uses: actions/checkout@v4
 
@@ -68,12 +71,12 @@ jobs:
         env:
           # Runners are amd64 natively, so no emulation tax.
           KITE_SERVER_PLATFORM: linux/amd64
-        run: ./run.sh --duration 45
+        run: ./run.sh --scenario ${{ matrix.scenario }} --duration 60
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: harness-shared-bus-results
+          name: harness-${{ matrix.scenario }}-results
           path: results/
           retention-days: 7

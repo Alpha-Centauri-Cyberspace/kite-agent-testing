@@ -41,9 +41,11 @@ PASS_CRITERIA = {
         "min_recall_high": 0.90,
         "max_false_positive": 0.05,
     },
-    "federation-roundtrip": {
-        "min_delivery_openclaw": 0.85,
-        "min_delivery_paperclip_via_federation": 0.75,
+    "a2a-ping-pong": {
+        # Each drain webhook should produce: openclaw a2a_sent → paperclip
+        # a2a_received → paperclip a2a_echoed → openclaw a2a_received. We
+        # measure the round-trip completion rate against drain volume.
+        "min_a2a_roundtrip_rate": 0.90,
     },
     "x402-onboarding": {
         # Percentage of x402-sign-required events the agent correctly
@@ -102,7 +104,13 @@ def _classify(events: list[dict]) -> dict:
     skipped: dict[str, list[dict]] = defaultdict(list)
     signed: dict[str, list[dict]] = defaultdict(list)
     decisions: dict[str, list[dict]] = defaultdict(list)
-    federated: list[dict] = []
+    # Hosted agent-to-agent messaging events: an agent calls
+    # POST /api/v1/agents/messages on the new endpoint, the server
+    # broadcasts a com.kite.agent.message CloudEvent, and the recipient
+    # picks it up via the agent_to:<id> WebSocket scope.
+    a2a_sent: dict[str, list[dict]] = defaultdict(list)
+    a2a_received: dict[str, list[dict]] = defaultdict(list)
+    a2a_echoed: dict[str, list[dict]] = defaultdict(list)
     errors: list[dict] = []
     total_cost_usd: float = 0.0
 
@@ -127,8 +135,12 @@ def _classify(events: list[dict]) -> dict:
                 total_cost_usd += float(e.get("cost_usd") or 0)
             except Exception:  # noqa: BLE001
                 pass
-        elif agent and evt == "federated":
-            federated.append(e)
+        elif agent and evt == "a2a_sent":
+            a2a_sent[agent].append(e)
+        elif agent and evt == "a2a_received":
+            a2a_received[agent].append(e)
+        elif agent and evt == "a2a_echoed":
+            a2a_echoed[agent].append(e)
 
     return {
         "drain_sent": drain_sent,
@@ -137,7 +149,9 @@ def _classify(events: list[dict]) -> dict:
         "skipped": dict(skipped),
         "signed": dict(signed),
         "decisions": dict(decisions),
-        "federated": federated,
+        "a2a_sent": dict(a2a_sent),
+        "a2a_received": dict(a2a_received),
+        "a2a_echoed": dict(a2a_echoed),
         "drain_errors": errors,
         "total_cost_usd": total_cost_usd,
     }
@@ -159,6 +173,22 @@ def _summary(c: dict) -> dict:
 
     signed_ct = {a: len(c.get("signed", {}).get(a, [])) for a in ("openclaw", "paperclip")}
     decisions_ct = {a: len(c.get("decisions", {}).get(a, [])) for a in ("openclaw", "paperclip")}
+    a2a_sent_ct = {a: len(c.get("a2a_sent", {}).get(a, [])) for a in ("openclaw", "paperclip")}
+    a2a_recv_ct = {a: len(c.get("a2a_received", {}).get(a, [])) for a in ("openclaw", "paperclip")}
+    a2a_echo_ct = {a: len(c.get("a2a_echoed", {}).get(a, [])) for a in ("openclaw", "paperclip")}
+
+    # A round-trip is: openclaw a2a_sent[seq] → paperclip a2a_received[seq]
+    # → paperclip a2a_echoed[seq] → openclaw a2a_received[seq]. We key the
+    # chain on the source drain seq that openclaw stamps into the message
+    # body (see scripted-subscriber's send_a2a path).
+    sent_seqs = {e.get("source_seq") for e in c.get("a2a_sent", {}).get("openclaw", [])}
+    sent_seqs.discard(None)
+    paperclip_received = {e.get("source_seq") for e in c.get("a2a_received", {}).get("paperclip", [])}
+    paperclip_echoed = {e.get("source_seq") for e in c.get("a2a_echoed", {}).get("paperclip", [])}
+    openclaw_received = {e.get("source_seq") for e in c.get("a2a_received", {}).get("openclaw", [])}
+    completed = sent_seqs & paperclip_received & paperclip_echoed & openclaw_received
+    roundtrip_rate = (len(completed) / sent) if sent else 0.0
+
     total_cost = round(c.get("total_cost_usd", 0.0), 6)
 
     out = {
@@ -172,7 +202,13 @@ def _summary(c: dict) -> dict:
         "skipped": skip,
         "signed": signed_ct,
         "decisions": decisions_ct,
-        "federated_messages": len(c["federated"]),
+        "a2a": {
+            "sent": a2a_sent_ct,
+            "received": a2a_recv_ct,
+            "echoed": a2a_echo_ct,
+            "roundtrips_completed": len(completed),
+            "roundtrip_rate": round(roundtrip_rate, 4),
+        },
         "delivery_pct": {a: pct(a) for a in ("openclaw", "paperclip")},
         "scenario_tag_breakdown": dict(tag_counts),
         "total_cost_usd": total_cost,
@@ -189,6 +225,8 @@ def _summary(c: dict) -> dict:
         expected_high = sent / 2 if sent else 0
         recall = (highs_received / expected_high) if expected_high else 0.0
         pf["recall_high"] = recall >= crit["min_recall_high"]
+    if "min_a2a_roundtrip_rate" in crit:
+        pf["a2a_roundtrip"] = roundtrip_rate >= crit["min_a2a_roundtrip_rate"]
     if "min_sign_decision_rate" in crit:
         sign_required = tag_counts.get("x402-sign-required", 0)
         signed_total = sum(signed_ct.values())
@@ -217,7 +255,6 @@ def _render(summary: dict, raw: list[dict]) -> None:
         f"- Duration: **{DURATION}s**",
         f"- Events sent: **{summary['events_sent']}**",
         f"- Drain errors: **{summary['drain_errors']}**",
-        f"- Federation forwards: **{summary['federated_messages']}**",
     ]
     if cost_line:
         md.append(cost_line)
@@ -233,6 +270,28 @@ def _render(summary: dict, raw: list[dict]) -> None:
             f"| {a} | {summary['received'][a]} | {summary['responded'][a]} | "
             f"{summary['skipped'][a]} | {summary['delivery_pct'][a]}% |"
         )
+
+    a2a = summary.get("a2a") or {}
+    a2a_total = sum((a2a.get("sent") or {}).values()) + sum((a2a.get("received") or {}).values())
+    if a2a_total:
+        md += [
+            "",
+            "## Agent-to-agent messages",
+            "",
+            "| Agent | a2a_sent | a2a_received | a2a_echoed |",
+            "|---|---|---|---|",
+        ]
+        for a in ("openclaw", "paperclip"):
+            md.append(
+                f"| {a} | {a2a['sent'][a]} | {a2a['received'][a]} | {a2a['echoed'][a]} |"
+            )
+        md.append("")
+        md.append(
+            f"- Round-trips completed (drain → openclaw → paperclip → openclaw): "
+            f"**{a2a['roundtrips_completed']}** / {summary['events_sent']} "
+            f"({a2a['roundtrip_rate'] * 100:.1f}%)"
+        )
+
     md += ["", "## Scenario tags observed", "", "| tag | count |", "|---|---|"]
     for tag, n in summary["scenario_tag_breakdown"].items():
         md.append(f"| `{tag}` | {n} |")

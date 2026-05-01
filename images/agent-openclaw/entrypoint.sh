@@ -5,8 +5,9 @@
 #   KITE_WS_URL          ws://kite-server:7700/ws
 #   KITE_HTTP_URL        http://kite-server:7700
 #   AGENT_MODE           scripted | model   (default scripted)
-#   SCENARIO             ping-pong | filter | federation-roundtrip | ...
-#   FEDERATION_TARGET_URL  optional; federated topology
+#   SCENARIO             ping-pong | filter | a2a-ping-pong | ...
+#   PEER_AGENT_ID        agent on the same team this agent messages in the
+#                        a2a-ping-pong scenario (set in compose).
 #
 # Scripted mode: runs scripted-subscriber.py, a plain python websockets client
 # emitting JSON log lines per lifecycle step.

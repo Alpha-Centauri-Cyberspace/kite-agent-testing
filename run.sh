@@ -3,8 +3,8 @@
 #
 # Usage:
 #   ./run.sh                                        # shared-bus, scripted, ping-pong
-#   ./run.sh --federated                            # federated topology
 #   ./run.sh --scenario filter                      # pick a specific scenario
+#   ./run.sh --scenario a2a-ping-pong               # exercise hosted A2A primitive
 #   ./run.sh --duration 60                          # observation window seconds
 #   ./run.sh --model-matrix                         # switch agents to LLM mode
 #   ./run.sh --models anthropic/claude-haiku-4-5    # per-run model (single)
@@ -25,7 +25,6 @@ KEEP="${KITE_TEST_KEEP:-0}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --federated)     TOPOLOGY="federated"; SCENARIO="federation-roundtrip"; shift ;;
     --scenario)      SCENARIO="$2"; shift 2 ;;
     --duration)      DURATION="$2"; shift 2 ;;
     --model-matrix)  MODE="model"; shift ;;
