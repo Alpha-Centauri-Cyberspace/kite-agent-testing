@@ -86,6 +86,11 @@ services:
       KITE_HTTP_URL: http://kite-server:7700
       AGENT_MODE: ${AGENT_MODE:-scripted}
       SCENARIO: ${SCENARIO:-ping-pong}
+      # Hosted agent-to-agent peering. MY_AGENT_ID lands via the bootstrap
+      # env file as well, but we set it here so PEER_AGENT_ID's value is
+      # readable next to it. PEER is the agent on the same team this one
+      # messages in the a2a-ping-pong scenario.
+      PEER_AGENT_ID: agent-paperclip
       # Model-mode inputs (ignored when AGENT_MODE=scripted).
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       AGENT_MODEL: ${AGENT_MODEL:-anthropic/claude-haiku-4-5}
@@ -106,6 +111,7 @@ services:
       KITE_HTTP_URL: http://kite-server:7700
       AGENT_MODE: ${AGENT_MODE:-scripted}
       SCENARIO: ${SCENARIO:-ping-pong}
+      PEER_AGENT_ID: agent-openclaw
       # Model-mode inputs (ignored when AGENT_MODE=scripted).
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       AGENT_MODEL: ${AGENT_MODEL:-anthropic/claude-haiku-4-5}

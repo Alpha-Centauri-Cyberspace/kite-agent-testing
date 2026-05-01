@@ -1,0 +1,21 @@
+name: a2a-ping-pong
+description: |
+  Validates the hosted agent-to-agent messaging primitive end-to-end.
+
+  Drain emits webhook events at 5/sec. For every event received,
+  agent-openclaw POSTs a `com.kite.agent.message` to agent-paperclip via
+  `POST /api/v1/agents/messages`. Paperclip receives the message via the
+  `agent_to:agent-paperclip` WebSocket scope and echoes back to openclaw.
+  The judge measures the round-trip completion rate against drain volume.
+
+topology: shared-bus
+duration_sec: 60
+
+steps:
+  - drain emits >= 30 webhook events
+  - openclaw sends one com.kite.agent.message per webhook to paperclip
+  - paperclip receives via agent_to:<id> and echoes (re:seq=N) back
+  - openclaw receives the echo
+
+pass_criteria:
+  min_a2a_roundtrip_rate: 0.90
